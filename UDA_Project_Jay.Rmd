@@ -1,0 +1,435 @@
+---
+title: "UDA Final Project"
+author: "Jay Sampat"
+date: "2024-02-27"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(reticulate)
+use_python("C:/Users/jaysa/AppData/Local/Programs/Python/Python311/python.exe", required = TRUE)
+```
+
+Scraping Code
+```{python, eval = FALSE}
+# DO NOT RUN
+
+from playwright.sync_api import sync_playwright
+import pandas as pd
+import time
+import os
+
+def scrape_comments():
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)  # Set headless=False to see the browser
+        page = browser.new_page()
+        page.goto("https://www.imdb.com/title/tt13751694/reviews")
+
+        # Loop to click the "Load More" button until it's not present
+        while True:
+            try:
+                # Wait for the "Load More" button and click
+                load_more_button = page.wait_for_selector("text=Load More", timeout=10000)
+                load_more_button.click()
+                # Wait a bit for the page to load more comments
+                time.sleep(2)
+            except:
+                # Break the loop if "Load More" button is not found or an error occurs
+                break
+
+        # Now that all comments are loaded, count them and scrape
+        comments_elements = page.locator("css=.text")
+        comments_count = comments_elements.count()
+        comments_list = []
+
+        # Similar for ratings
+        ratings_elements = page.locator("css=.rating-other-user-rating > span")
+        ratings_count = ratings_elements.count()
+        ratings_list = []
+
+        # this worked - ratings_elements = page.locator(".rating-other-user-rating > span") but also extracted the /10
+
+        # did not work span:nth-child(1)
+        # did not work > span:first-child
+
+        # ratings - ipl-ratings-bar then rating-other-user-rating then span 1 then point-scale 10
+        # title - title
+
+        for i in range(comments_count):
+            comment = comments_elements.nth(i).inner_text()
+            comments_list.append({'comment': comment})
+            
+        for j in range(ratings_count):
+            rating = ratings_elements.nth(j).inner_text()
+            ratings_list.append({'rating': rating})
+
+        # Close the browser
+        browser.close()
+
+        # Create a DataFrame from the list of comments and ratings
+        all_reviews = pd.DataFrame(comments_list)
+        all_ratings = pd.DataFrame(ratings_list)
+        return all_reviews, all_ratings
+
+# Call the function and get the DataFrame
+all_reviews, all_ratings = scrape_comments()
+
+# os.environ.clear()
+```
+
+
+Merging the Data Frames
+```{python, eval = FALSE}
+# DO NOT RUN
+
+# drop rows with "/10" in the ratings data frame: 1224 rows
+all_ratings_cleaned = all_ratings[~all_ratings['rating'].str.contains("/10")]
+
+# drop the last 10 comments of the all_reviews data frame: 1234 rows - 10 = 1224 rows
+all_reviews_cleaned10 = all_reviews.head(-10)
+
+# Reset indices to ensure alignment
+all_ratings_cleaned_reset = all_ratings_cleaned.reset_index(drop=True)
+all_reviews_cleaned10_reset = all_reviews_cleaned10.reset_index(drop=True)
+
+# Merge the two DataFrames
+all_reviews_ratings = pd.concat([all_reviews_cleaned10_reset, all_ratings_cleaned_reset], axis=1)
+
+# Save this DataFrame by writing to a csv file to load it in
+# all_reviews_ratings.to_csv('all_reviews_ratings.csv', index=False)
+```
+
+
+Read in the CSV
+```{python}
+# work with saved csv file for sentiment analysis
+import pandas as pd
+
+df = pd.read_csv('all_reviews_ratings.csv')
+```
+
+
+EDA - Distribution of Ratings
+```{python}
+# Conduct exploratory data analysis on the ratings column
+df['rating'].value_counts()
+
+# plot the ratings to show their distribution
+
+# import libraries
+import matplotlib.pyplot as plt
+import seaborn as sns  # For a nice plotting theme
+
+# Grouping the data to get the counts of each rating
+rating_counts = df['rating'].value_counts().sort_index()
+
+# Plotting the distribution of ratings
+plt.figure(figsize=(7, 5))
+bars = plt.bar(rating_counts.index, rating_counts.values, color=['red' if x == 1 else 'green' if x == 10 else 'grey' for x in rating_counts.index])
+
+# Highlighting ratings 1 and 10
+for bar, value in zip(bars, rating_counts.values):
+    height = bar.get_height()
+    plt.text(bar.get_x() + bar.get_width() / 2.0, height, f'{value}', ha='center', va='bottom', fontsize=10, fontweight='bold')
+
+# Enhancing title, labels, and ticks for better readability and aesthetics
+plt.title('Polarization in Ratings', fontsize=16, fontweight='bold')
+plt.xlabel('Rating', fontsize=14)
+plt.ylabel('Frequency', fontsize=14)
+plt.xticks(rating_counts.index, fontsize=12)
+plt.yticks(fontsize=12)
+
+# Annotating to call out the disparity
+plt.annotate('Most audiences rated 1', xy=(1, rating_counts[1]), xytext=(1.5, rating_counts[1]+1))
+plt.annotate('But others rated 10', xy=(10, rating_counts[10]), xytext=(8, rating_counts[10]+30))
+plt.tight_layout()
+plt.show()
+```
+
+
+Clean the comments
+```{python}
+# Clean the comments here before working with them
+import re
+import nltk
+from nltk.stem import WordNetLemmatizer
+from nltk.corpus import stopwords
+
+# Download necessary NLTK data
+nltk.download('wordnet')
+nltk.download('stopwords')
+
+# Function to replace contractions
+def replace_contractions(text):
+    # Dictionary of contractions and their expansions
+    contractions = {
+        "can't": "cannot",
+        "won't": "will not",
+        # May need to add more contractions and their expansions
+    }
+    pattern = re.compile(r'\b(' + '|'.join(contractions.keys()) + r')\b')
+    result = pattern.sub(lambda x: contractions[x.group()], text)
+    return result
+
+# Lemmatizer instance
+lemmatizer = WordNetLemmatizer()
+
+# Function to lemmatize text
+def lemmatize_text(text):
+    words = text.split()
+    lemmatized_words = [lemmatizer.lemmatize(word) for word in words]
+    return ' '.join(lemmatized_words)
+
+# English stopwords
+stop_words = set(stopwords.words('english'))
+
+# Function to remove stopwords
+def remove_stopwords(text):
+    words = text.split()
+    filtered_words = [word for word in words if word not in stop_words]
+    return ' '.join(filtered_words)
+
+# Apply cleaning steps to the 'comment' column
+df['comment'] = df['comment'].str.lower()
+df['comment'] = df['comment'].apply(lambda x: re.sub(r'[^\w\s]', '', x))  # Remove punctuation
+df['comment'] = df['comment'].apply(lambda x: re.sub(r'\d+', '', x))  # Remove numbers
+df['comment'] = df['comment'].apply(lambda x: x.strip())  # Strip whitespace
+df['comment'] = df['comment'].apply(replace_contractions)  # Replace contractions
+df['comment'] = df['comment'].apply(lemmatize_text)  # Lemmatize
+df['comment'] = df['comment'].apply(remove_stopwords)  # Remove stopwords
+df['comment'] = df['comment'].apply(lambda x: re.sub(r'\s+', ' ', x))  # Remove extra spaces
+```
+
+
+Sentiment Analysis using Spacy
+```{python}
+# Sentiment Analysis using spacy
+import spacy
+from spacytextblob.spacytextblob import SpacyTextBlob
+
+nlp = spacy.load('en_core_web_sm')
+nlp.add_pipe('spacytextblob')
+
+def get_sentiment(text):
+    doc = nlp(text)
+    return doc._.polarity
+
+df['Sentiment'] = df['comment'].apply(get_sentiment)
+
+def get_subjectivity(text):
+    doc = nlp(text)
+    return doc._.subjectivity
+
+def get_assessments(text):
+    doc = nlp(text)
+    return doc._.assessments
+  
+# 'Comment' is the column with text data
+df['Subjectivity'] = df['comment'].apply(get_subjectivity)
+
+# For assessments, since they can be lists of tuples, possibly store them as strings or handle them separately
+df['Assessments'] = df['comment'].apply(get_assessments).apply(str)
+
+average_subjectivity = df['Subjectivity'].mean()
+print(f"Average Subjectivity Score: {average_subjectivity}")
+
+# Find relationship between a reviewer's sentiment and their rating
+rating_sentiment_correlation_python = df['rating'].corr(df['Sentiment'])
+
+print(rating_sentiment_correlation_python)
+
+
+# view and plot distribution of Sentiment column
+# Summary statistics
+import seaborn as sns
+print(df['Sentiment'].describe())
+
+# Set the style of seaborn for better aesthetics
+sns.set(style="whitegrid")
+
+# Plotting the histogram of the Sentiment column
+plt.figure(figsize=(5, 3))
+sns.histplot(df['Sentiment'], kde=True, color="skyblue", bins=30, edgecolor='black')
+plt.title('Distribution of Sentiment Scores')
+plt.xlabel('Sentiment Score')
+plt.ylabel('Frequency')
+plt.show()
+
+# Plotting the box plot of the Sentiment column
+plt.figure(figsize=(5, 3))
+sns.boxplot(x=df['Sentiment'], color="lightblue")
+plt.title('Box Plot of Sentiment Scores')
+plt.xlabel('Sentiment Score')
+plt.show()
+```
+
+
+Initial WordCloud
+```{python}
+from wordcloud import WordCloud, STOPWORDS
+import matplotlib.pyplot as plt
+
+# Combine all comments into a single string
+text = ' '.join(comment for comment in df['comment'])
+
+# Define custom stopwords to exclude specific words
+custom_stopwords = set(STOPWORDS).union(['film', 'movie', 'wa', 'scene', 'animal', 'ha'])
+
+# Generate a word cloud image, excluding the custom stopwords
+wordcloud = WordCloud(background_color='white', max_words=200, contour_width=3, contour_color='steelblue', stopwords=custom_stopwords).generate(text)
+
+# Display the generated word cloud image using matplotlib
+plt.figure(figsize=(10, 6))
+plt.imshow(wordcloud, interpolation='bilinear')
+plt.axis('off')  # Remove axis
+plt.show()
+```
+
+Better WordCloud - with color scheme
+```{python}
+from wordcloud import WordCloud, STOPWORDS
+import matplotlib.pyplot as plt
+
+# Combine all comments into a single string
+text = ' '.join(comment for comment in df['comment'])
+
+# Manually remove specified words
+remove_words = ['film', 'movie', 'wa', 'scene', 'animal', 'ha']
+for word in remove_words:
+    text = text.replace(' ' + word + ' ', ' ')
+
+# Define lists of positive and negative words
+positive_words = ['good', 'character', 'action', 'story', 'hero', 'great', 'amazing', 'better']
+negative_words = ['bad', 'violence', 'nothing', 'negative', 'hate', 'violent']
+
+class SimpleGroupedColorFunc(object):
+    """Custom color function to color words based on their connotation."""
+    def __init__(self, positive_words, negative_words, positive_color, negative_color):
+        self.positive_words = positive_words
+        self.negative_words = negative_words
+        self.positive_color = positive_color
+        self.negative_color = negative_color
+
+    def __call__(self, word, **kwargs):
+        if word in self.positive_words:
+            return self.positive_color
+        elif word in self.negative_words:
+            return self.negative_color
+        else:
+            # Return a default color for neutral words
+            return "gray"
+
+# Generate a word cloud image
+wordcloud = WordCloud(background_color='white', max_words=200, contour_width=3, contour_color='steelblue')
+
+# Apply the custom color function
+color_func = SimpleGroupedColorFunc(positive_words, negative_words, positive_color="green", negative_color="red")
+wordcloud = wordcloud.generate(text)
+wordcloud.recolor(color_func=color_func)
+
+# Display the generated word cloud image using matplotlib
+plt.figure(figsize=(10, 6))
+plt.imshow(wordcloud, interpolation='bilinear')
+plt.axis('off')  # Remove axis
+plt.show()
+```
+
+
+Topic Modeling Using BERTopic - not very valuable
+```{python}
+from bertopic import BERTopic
+from bertopic.vectorizers import ClassTfidfTransformer
+import pandas as pd
+
+# Preprocess the 'Comment' column
+df['comment'] = df['comment'].astype(str)
+
+# Initialize the ClassTfidfTransformer and BERTopic model
+ctfidf_model = ClassTfidfTransformer(reduce_frequent_words=True)
+topic_model = BERTopic(ctfidf_model=ctfidf_model)
+
+# Fit the model on the 'Comment' column
+topics, probs = topic_model.fit_transform(df['comment'].to_list())
+
+# Get and display topic information
+topic_info = topic_model.get_topic_info()
+print(topic_info)
+
+# Optionally, get details for a specific topic, for example, topic 0
+print(topic_model.get_topic(0))
+
+# Get representative documents for a topic, for example, topic 0
+print(topic_model.get_representative_docs(0))
+
+# Generate topic labels
+topic_model.generate_topic_labels()
+
+# Reduce the number of topics to, for example, 5
+topic_model.reduce_topics(df['comment'].to_list(), nr_topics = 5)
+
+# Recheck the topic information after reduction
+print(topic_model.get_topic_info())
+
+# Define documents and classes
+docs = df['comment'].to_list()
+# Use the 'Sentiment' column to use as targets
+# If above 0, use 'Positive', otherwise use 'Negative'
+targets = df['Sentiment'].apply(lambda x: 'Positive' if x > 0 else 'Negative').to_list()
+
+# Perform topics per class modeling
+topics_per_class = topic_model.topics_per_class(docs, classes = targets)
+
+# Visualize topics per class
+# Open a web browser window to display the visualization
+topic_model.visualize_topics_per_class(topics_per_class, top_n_topics = 5)
+```
+
+# Web Scraping and Sentiment Analysis of IMDb Reviews: A Report on the Bollywood Movie, "Animal"
+
+## Introduction
+
+The project investigates public sentiment towards the controversial Bollywood film "Animal" using web scraping and sentiment analysis techniques. Known for its polarizing content, "Animal" has been both critiqued for its themes and celebrated for its storytelling, creating a dichotomy between critic opinions and audience ratings. This report aims to bridge the gap by analyzing user-generated content from IMDb reviews to understand the broader audience perception of the film.
+
+## Rationale
+
+The motivation behind this project stems from the stark contrast in reception between critics and the general audience regarding "Animal". Critics have labeled the film as "cheerfully misogynistic, morally bankrupt, and stomach-churningly violent", while it still managed to secure a fifth place among the top-grossing Hindi movies. This discrepancy raises questions about the factors that contribute to a film's success and the role of audience sentiment in shaping its reception. By applying web scraping and sentiment analysis, this project seeks to uncover the underlying sentiments and themes that resonate with the audience.
+
+## Methods
+
+### Data Collection
+
+The data was collected using the `playwright` library to automate web scraping on IMDb's review section for "Animal". The script navigated through the website, interacted with the "Load More" button to reveal additional reviews, and extracted the review texts and user ratings. These were then compiled into a Pandas DataFrame for further processing. 
+
+### Data Cleaning and Preprocessing
+
+The raw review comments underwent a series of cleaning steps to prepare them for analysis. This included converting texts to lowercase, removing punctuation and numbers, stripping whitespace, and lemmatizing words. Additionally, stopwords were removed to reduce noise and focus on the more meaningful content within the reviews.
+
+### Sentiment Analysis
+
+Using the cleaned review texts, sentiment analysis was performed to assign a sentiment polarity score to each review. This score indicates the positive (1) or negative (-1) nature of the text, on that scale. The sentiment scores, along with user ratings, were then analyzed to explore any correlations between the sentiment expressed in reviews and the numerical ratings given by the users.
+
+### Visualization
+
+Various visualizations were created to represent the data, including distribution plots for ratings and sentiment scores, and word clouds to visually depict the most frequent and significant words used in the reviews.
+
+## Findings
+
+### Polarization in Ratings
+
+The initial exploration of the ratings revealed a significant polarization, with the majority of ratings being either 1 or 10. This suggests a divided audience reception, with some viewers highly appreciating the film, while others strongly disliked it.
+
+### Positive Sentiment Skew
+
+Despite the polarization in ratings, sentiment analysis revealed a positive skew in sentiment scores, with a mean score of 0.1 indicating a generally positive sentiment among the reviews. This suggests that, on balance, the audience's textual feedback on "Animal" leans more towards the positive.
+
+### Word Cloud Insights
+
+The word clouds highlighted a focus on "positive" words like "story" and "character", overshadowing negative terms such as "bad" and "violence". This indicates that despite the film's controversial themes, elements like storytelling and character development were appreciated by the viewers.
+
+### Correlation Analysis
+
+The sentiment scores alone were found to be a weak predictor of the user ratings (0.225), indicating that while sentiment provides insight into the qualitative reception of the film, it does not directly translate to the quantitative ratings.
+
+## Conclusion
+
+The report reveals a complex audience reception towards "Animal". Despite significant criticism and majority 1-star ratings, the overall positive sentiment and appreciation for certain aspects of the film suggest that it managed to resonate with a substantial portion of its viewers. This report highlights the nuanced relationship between audience sentiment, critical reception, and commercial success, suggesting that films capable of evoking strong emotions, regardless of their nature, can achieve notable engagement and discussion among viewers and make a ton of money. However, it sets a dangerous precedent going forward for Bollywood and we must be careful as Bollywood movie viewers to not embody such behaviors in real life.
